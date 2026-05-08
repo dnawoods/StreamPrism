@@ -19,16 +19,7 @@ export interface IPTVPlaylist {
   name: string;
   channels: IPTVChannel[];
   groups: string[];
-}
-
-export interface Recording {
-  id: string;
-  channelName: string;
-  channelId: string;
-  timestamp: number;
-  duration: number;
-  blobUrl: string;
-  title: string;
+  epgUrl?: string;
 }
 
 export interface ParentalControl {
@@ -40,6 +31,8 @@ export interface ParentalControl {
 export interface AppSettings {
   playlistUrl: string;
   epgUrl: string;
+  useProxy?: boolean;
+  proxyStreams?: boolean;
   lastChannelId?: string;
   favorites: string[]; // List of channel IDs
   parentalControl: ParentalControl;

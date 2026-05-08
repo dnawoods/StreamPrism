@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Settings as SettingsIcon, Lock, Unlock, ShieldAlert } from 'lucide-react';
+import { Settings as SettingsIcon, Lock, ShieldAlert, Globe, Activity } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -12,7 +12,7 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { AppSettings, ParentalControl } from '../types';
+import { AppSettings } from '../types';
 import { Switch } from '@/components/ui/switch';
 import { Separator } from '@/components/ui/separator';
 
@@ -25,7 +25,9 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ settings, onSave
   const [playlistUrl, setPlaylistUrl] = useState(settings.playlistUrl);
   const [epgUrl, setEpgUrl] = useState(settings.epgUrl);
   const [isOpen, setIsOpen] = useState(false);
-  
+  const [useProxy, setUseProxy] = useState(settings.useProxy !== false); // Default to true if not specified
+  const [proxyStreams, setProxyStreams] = useState(settings.proxyStreams !== false); // Default to true
+
   // Parental Control Local State
   const [pcEnabled, setPcEnabled] = useState(settings.parentalControl?.enabled || false);
   const [pcPin, setPcPin] = useState(settings.parentalControl?.pin || '');
@@ -35,6 +37,8 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ settings, onSave
       ...settings, 
       playlistUrl, 
       epgUrl,
+      useProxy,
+      proxyStreams,
       parentalControl: {
         enabled: pcEnabled,
         pin: pcPin,
@@ -46,7 +50,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ settings, onSave
 
   return (
     <Dialog open={isOpen} onOpenChange={setIsOpen}>
-      <DialogTrigger render={<Button variant="outline" size="sm" className="h-9 px-4 border-slate-700 bg-slate-800 text-slate-200 hover:bg-slate-700 text-xs font-semibold" />}>
+      <DialogTrigger className="group/button inline-flex shrink-0 items-center justify-center rounded-lg border border-slate-700 bg-clip-padding text-sm font-semibold whitespace-nowrap transition-all outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 h-9 px-4 bg-slate-800 text-slate-200 hover:bg-slate-700 text-xs shadow-sm cursor-pointer">
         <SettingsIcon size={16} className="mr-2" />
         Settings
       </DialogTrigger>
@@ -63,7 +67,6 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ settings, onSave
         
         <div className="grid gap-6 py-4">
           <div className="space-y-4">
-            <h3 className="text-xs font-bold uppercase tracking-widest text-slate-500">Source URLs</h3>
             <div className="grid gap-2">
               <Label htmlFor="playlist" className="text-[10px] uppercase font-bold text-slate-500 tracking-widest">Playlist URL (M3U)</Label>
               <Input
@@ -89,6 +92,36 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ settings, onSave
           <Separator className="bg-slate-800" />
 
           <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="space-y-0.5">
+                <h3 className="text-xs font-bold uppercase tracking-widest text-slate-500 flex items-center gap-2">
+                  <Globe size={14} className="text-blue-500" />
+                  Network Proxy
+                </h3>
+                <p className="text-[10px] text-slate-600">Route requests through local server to bypass CORS.</p>
+              </div>
+              <Switch 
+                checked={useProxy} 
+                onCheckedChange={setUseProxy}
+                className="data-[state=checked]:bg-blue-600"
+              />
+            </div>
+
+            <div className="flex items-center justify-between">
+              <div className="space-y-0.5">
+                <h3 className="text-xs font-bold uppercase tracking-widest text-slate-500 flex items-center gap-2">
+                  <Activity size={14} className="text-indigo-500" />
+                  Stream Proxy
+                </h3>
+                <p className="text-[10px] text-slate-600">Proxy actual video data. Disable if streams fail to load.</p>
+              </div>
+              <Switch 
+                checked={proxyStreams} 
+                onCheckedChange={setProxyStreams}
+                className="data-[state=checked]:bg-indigo-600"
+              />
+            </div>
+
             <div className="flex items-center justify-between">
               <div className="space-y-0.5">
                 <h3 className="text-xs font-bold uppercase tracking-widest text-slate-500 flex items-center gap-2">

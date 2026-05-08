@@ -4,10 +4,10 @@
  */
 
 import { useEffect, useState, useMemo, useCallback } from 'react';
-import { Search, Tv, List, Info, AlertCircle, Play, Heart, Video, Lock, ShieldAlert, History } from 'lucide-react';
+import { Search, Tv, List, Info, AlertCircle, Play, Heart, Lock, ShieldAlert, History, PowerOff } from 'lucide-react';
 import { fetchPlaylist } from './services/iptvService';
 import { fetchEPG, parseXMLTVDate } from './services/epgService';
-import { IPTVChannel, IPTVPlaylist, AppSettings, EPGItem, Recording } from './types';
+import { IPTVChannel, IPTVPlaylist, AppSettings, EPGItem } from './types';
 import { VideoPlayer } from './components/VideoPlayer';
 import { ChannelCard } from './components/ChannelCard';
 import { SettingsDialog } from './components/SettingsDialog';
@@ -17,7 +17,7 @@ import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { AnimatePresence, motion } from 'motion/react';
-import { TooltipProvider } from '@/components/ui/tooltip';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { useKeyboardNavigation } from './hooks/useKeyboardNavigation';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
@@ -25,6 +25,8 @@ import { Button } from '@/components/ui/button';
 const DEFAULT_SETTINGS: AppSettings = {
   playlistUrl: 'https://iptv-org.github.io/iptv/countries/us.m3u',
   epgUrl: 'https://epg.pw/xmltv/feed/US.xml',
+  useProxy: true,
+  proxyStreams: true,
   favorites: [],
   parentalControl: {
     enabled: false,
@@ -40,6 +42,10 @@ export default function App() {
     
     try {
       const parsed = JSON.parse(saved);
+      // Migrate from old 404ing EPG URL
+      if (parsed.epgUrl === 'https://iptv-org.github.io/epg/guides/us.xml' || !parsed.epgUrl) {
+        parsed.epgUrl = DEFAULT_SETTINGS.epgUrl;
+      }
       // If the saved URLs are empty, use defaults
       return {
         ...DEFAULT_SETTINGS,
@@ -55,10 +61,6 @@ export default function App() {
   const [playlist, setPlaylist] = useState<IPTVPlaylist | null>(null);
   const [epg, setEpg] = useState<EPGItem[]>([]);
   const [selectedChannel, setSelectedChannel] = useState<IPTVChannel | null>(null);
-  const [recordings, setRecordings] = useState<Recording[]>(() => {
-    const saved = localStorage.getItem('iptv_recordings');
-    return saved ? JSON.parse(saved) : [];
-  });
 
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedGroup, setSelectedGroup] = useState<string>('All');
@@ -74,40 +76,61 @@ export default function App() {
 
   const { focusedId, setFocusedId } = useKeyboardNavigation();
 
-  useEffect(() => {
-    localStorage.setItem('iptv_settings', JSON.stringify(settings));
-    if (settings.playlistUrl) {
-      loadData();
-    }
-  }, [settings.playlistUrl, settings.epgUrl, refreshTrigger]);
-
-  useEffect(() => {
-    localStorage.setItem('iptv_recordings', JSON.stringify(recordings));
-  }, [recordings]);
-
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     setIsLoading(true);
     setError(null);
     try {
-      const pl = await fetchPlaylist(settings.playlistUrl);
+      if (!settings.playlistUrl) {
+        setIsLoading(false);
+        return;
+      }
+
+      let finalPlaylistUrl = settings.playlistUrl;
+      let finalEpgUrl = settings.epgUrl;
+
+      console.log("[SYSTEM] Loading playlist from:", finalPlaylistUrl.substring(0, 50) + "...");
+      const pl = await fetchPlaylist(finalPlaylistUrl, settings.useProxy !== false);
+      console.log(`[SYSTEM] Playlist loaded: ${pl.channels.length} channels`);
+      
+      // If the playlist has an embedded EPG URL and we don't have one yet, prefer it
+      if (pl.epgUrl && !settings.epgUrl) {
+        finalEpgUrl = pl.epgUrl;
+        console.log("[SYSTEM] Using EPG URL from playlist:", finalEpgUrl);
+      }
       setPlaylist(pl);
       
-      if (settings.epgUrl) {
+      if (finalEpgUrl) {
         try {
-          const epgData = await fetchEPG(settings.epgUrl);
+          console.log("[SYSTEM] Loading EPG from:", finalEpgUrl.substring(0, 50) + "...");
+          const epgData = await fetchEPG(finalEpgUrl, settings.useProxy !== false);
+          console.log(`[SYSTEM] EPG loaded: ${epgData.length} items`);
           setEpg(epgData);
         } catch (epgErr) {
-          console.warn('EPG failed to load (ignoring):', epgErr);
+          console.warn('[SYSTEM] EPG failed to load:', epgErr);
+        }
+      } else if (pl.epgUrl) {
+        // Fallback for case where finalEpgUrl was not set but pl.epgUrl exists
+        try {
+          const epgData = await fetchEPG(pl.epgUrl, settings.useProxy !== false);
+          setEpg(epgData);
+        } catch (e) {
+          console.warn('[SYSTEM] Final fallback EPG failed');
         }
       } else {
         setEpg([]);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load playlist');
+      console.error("[SYSTEM] Load error:", err);
+      setError(err instanceof Error ? err.message : 'Failed to load data from source');
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [settings.playlistUrl, settings.epgUrl, refreshTrigger]);
+
+  useEffect(() => {
+    localStorage.setItem('iptv_settings', JSON.stringify(settings));
+    loadData();
+  }, [settings, loadData]);
 
   const filteredChannels = useMemo(() => {
     if (!playlist) return [];
@@ -171,14 +194,6 @@ export default function App() {
     }
   };
 
-  const handleRecordingComplete = (recording: Recording) => {
-    setRecordings(prev => [recording, ...prev]);
-  };
-
-  const deleteRecording = (id: string) => {
-    setRecordings(prev => prev.filter(r => r.id !== id));
-  };
-
   return (
     <TooltipProvider>
       <div className="flex h-screen bg-slate-950 text-slate-200 font-sans flex-col overflow-hidden">
@@ -205,6 +220,20 @@ export default function App() {
               >
                 {isLoading ? 'Loading...' : 'Refresh Data'}
               </Button>
+              <Tooltip>
+                <TooltipTrigger 
+                  className="group/button inline-flex shrink-0 items-center justify-center rounded-lg border border-transparent bg-clip-padding transition-all outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 h-9 w-9 text-slate-400 hover:text-rose-500 hover:bg-rose-500/10 transition-colors"
+                  onClick={() => {
+                    console.log("[SYSTEM] Terminating all stream connections...");
+                    setSelectedChannel(null);
+                  }}
+                >
+                  <PowerOff size={18} />
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="bg-slate-900 border-slate-800 text-[10px] uppercase tracking-widest font-bold text-rose-500">
+                  Terminate All Connections
+                </TooltipContent>
+              </Tooltip>
               <SettingsDialog settings={settings} onSave={(s) => {
                 setSettings({ ...settings, ...s });
                 setRefreshTrigger(prev => prev + 1);
@@ -217,7 +246,7 @@ export default function App() {
         <main className="flex-1 p-4 grid grid-cols-12 grid-rows-6 gap-4 overflow-hidden">
           
           {/* Sidebar: Categories */}
-          <aside className="col-span-2 row-span-3 bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden flex flex-col shadow-xl">
+          <aside className="col-span-2 row-span-6 bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden flex flex-col shadow-xl">
             <div className="p-4 border-b border-slate-800 bg-slate-800/30">
               <h2 className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Categories</h2>
             </div>
@@ -285,7 +314,7 @@ export default function App() {
                     url={selectedChannel.url} 
                     title={selectedChannel.name} 
                     channelId={selectedChannel.id}
-                    onRecordingComplete={handleRecordingComplete}
+                    proxyStreams={settings.proxyStreams !== false}
                   />
                 </div>
                 <div className="h-20 bg-slate-900/90 border-t border-slate-800 p-4 flex items-center justify-between">
@@ -395,83 +424,15 @@ export default function App() {
             </div>
           </aside>
 
-          {/* Bottom: Recordings / Guide */}
+          {/* Bottom: Guide */}
           <section className="col-span-7 row-span-3 bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden flex flex-col shadow-xl">
-            <Tabs defaultValue="guide" className="h-full flex flex-col">
-              <TabsList className="bg-slate-800/50 border-b border-slate-800 rounded-none w-full justify-start px-4 h-11">
-                <TabsTrigger value="guide" className="text-[10px] uppercase font-bold tracking-widest text-slate-400 data-[state=active]:text-emerald-500 data-[state=active]:bg-transparent">Program Guide</TabsTrigger>
-                <TabsTrigger value="recordings" className="text-[10px] uppercase font-bold tracking-widest text-slate-400 data-[state=active]:text-emerald-500 data-[state=active]:bg-transparent flex items-center gap-2">
-                  <Video size={12} />
-                  Recordings
-                  {recordings.length > 0 && <Badge className="bg-emerald-500 text-[8px] h-3.5 px-1 min-w-[14px] flex items-center justify-center">{recordings.length}</Badge>}
-                </TabsTrigger>
-              </TabsList>
-              
-              <TabsContent value="guide" className="flex-1 m-0 overflow-hidden">
-                <div className="h-full">
-                  <EPGGuide 
-                    channels={filteredChannels.slice(0, 100)} 
-                    epg={epg} 
-                    onChannelSelect={setSelectedChannel}
-                    selectedChannelId={selectedChannel?.id}
-                  />
-                </div>
-              </TabsContent>
-
-              <TabsContent value="recordings" className="flex-1 m-0 overflow-hidden">
-                <ScrollArea className="h-full p-4">
-                  <div className="grid grid-cols-2 gap-4">
-                    {recordings.map(rec => (
-                      <div key={rec.id} className="bg-slate-950/40 border border-slate-800 rounded-xl p-3 flex gap-3 group relative">
-                        <div className="w-20 h-14 bg-slate-800 rounded flex items-center justify-center shrink-0">
-                          <Video size={20} className="text-emerald-500/40" />
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <h4 className="text-[11px] font-bold text-slate-200 truncate">{rec.title}</h4>
-                          <p className="text-[9px] text-slate-500 mt-1">{rec.channelName}</p>
-                          <div className="flex justify-between items-center mt-2">
-                            <span className="text-[9px] text-emerald-500/60 font-mono">{Math.floor(rec.duration / 60)}:{(rec.duration % 60).toString().padStart(2, '0')}</span>
-                            <div className="flex gap-2">
-                              <a href={rec.blobUrl} download={`${rec.title}.webm`} className="text-[9px] text-blue-400 hover:underline">Download</a>
-                              <button onClick={() => deleteRecording(rec.id)} className="text-[9px] text-rose-500 hover:underline">Delete</button>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                    {recordings.length === 0 && (
-                      <div className="col-span-2 py-8 text-center text-slate-600 italic text-xs">
-                        No recordings yet. Hit the record button in the player to save live moments.
-                      </div>
-                    )}
-                  </div>
-                </ScrollArea>
-              </TabsContent>
-            </Tabs>
-          </section>
-
-          {/* Bottom Left: Quick Setup Info */}
-          <section className="col-span-2 row-span-3 bg-emerald-950/10 border border-emerald-900/30 rounded-2xl p-5 flex flex-col justify-between shadow-xl">
-            <div className="min-w-0">
-              <h2 className="text-[10px] font-bold uppercase tracking-widest text-emerald-500 mb-3">Service Setup</h2>
-              <div className="space-y-3">
-                <div className="space-y-1.5">
-                  <label className="text-[9px] uppercase font-bold text-slate-600">Active Playlist</label>
-                  <div className="bg-black/40 p-2 rounded-lg text-[10px] font-mono text-slate-400 truncate border border-slate-800/50">
-                    {settings.playlistUrl ? 'CONNECTED' : 'NOT LINKED'}
-                  </div>
-                </div>
-                <div className="space-y-1.5">
-                  <label className="text-[9px] uppercase font-bold text-slate-600">EPG Source</label>
-                  <div className="bg-black/40 p-2 rounded-lg text-[10px] font-mono text-slate-400 truncate border border-slate-800/50">
-                    {settings.epgUrl ? 'SYNCHRONIZED' : 'LOCAL ONLY'}
-                  </div>
-                </div>
-              </div>
-            </div>
-            <div className="flex items-center gap-2 text-[9px] text-emerald-500/40 font-medium italic">
-              <ShieldAlert size={10} />
-              Secured Connection
+            <div className="flex-1 overflow-hidden">
+              <EPGGuide 
+                channels={filteredChannels.slice(0, 100)} 
+                epg={epg} 
+                onChannelSelect={setSelectedChannel}
+                selectedChannelId={selectedChannel?.id}
+              />
             </div>
           </section>
 
@@ -484,8 +445,13 @@ export default function App() {
               <span className={`w-1.5 h-1.5 rounded-full ${playlist ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]' : 'bg-amber-500 animate-pulse'}`}></span> 
               {playlist ? 'SYSTEM OPERATIONAL' : 'SYSTEM INITIALIZING'}
             </div>
-            <div className="flex items-center gap-2">RECORDING CACHE: {(recordings.length * 0.1).toFixed(1)} MB</div>
-            <div className="flex items-center gap-2">FRAMEWORK: GOOGLE TV v4</div>
+            <div className="flex items-center gap-2 uppercase">
+              PLAYLIST: <span className={settings.playlistUrl ? 'text-emerald-500' : 'text-amber-500'}>{settings.playlistUrl ? 'CONNECTED' : 'OFFLINE'}</span>
+            </div>
+            <div className="flex items-center gap-2 uppercase">
+              EPG: <span className={settings.epgUrl ? 'text-emerald-500' : 'text-slate-500'}>{settings.epgUrl ? 'SYNCED' : 'LOCAL'}</span>
+            </div>
+            <div className="flex items-center gap-2">NETWORK: OPTIMIZED</div>
           </div>
           <div className="text-[10px] font-mono opacity-30 uppercase tracking-widest text-slate-500">
             PrimeLink Enterprise v1.2.0 | Encrypted Signal

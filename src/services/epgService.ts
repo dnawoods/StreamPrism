@@ -1,8 +1,29 @@
 import { EPGItem } from '../types';
 
 export function parseXMLTV(content: string): EPGItem[] {
+  const sanitizedContent = content.trim();
+  if (!sanitizedContent) {
+    console.warn("[EPG] Empty EPG content received");
+    return [];
+  }
+  
   const parser = new DOMParser();
-  const xmlDoc = parser.parseFromString(content, 'text/xml');
+  // Basic check if it even looks like XML
+  if (!sanitizedContent.includes('<') || !sanitizedContent.includes('>')) {
+    console.warn("[EPG] Content does not look like XML");
+    return [];
+  }
+  
+  const xmlDoc = parser.parseFromString(sanitizedContent, 'text/xml');
+  
+  // Check for parsing errors
+  const parserError = xmlDoc.getElementsByTagName('parsererror');
+  if (parserError.length > 0) {
+    console.error("[EPG] XML Parsing Error:", parserError[0].textContent);
+    // Try to recover or just return empty
+    return [];
+  }
+
   const programmes = xmlDoc.getElementsByTagName('programme');
   const items: EPGItem[] = [];
 
@@ -26,17 +47,41 @@ export function parseXMLTV(content: string): EPGItem[] {
   return items;
 }
 
-export async function fetchEPG(url: string): Promise<EPGItem[]> {
+export async function fetchEPG(url: string, useProxy: boolean = true): Promise<EPGItem[]> {
   try {
-    const response = await fetch(`/api/proxy?url=${encodeURIComponent(url)}`);
+    let fetchUrl = url;
+    if (useProxy) {
+      try {
+        const b64 = btoa(unescape(encodeURIComponent(url)));
+        fetchUrl = `/api/proxy?b64=${encodeURIComponent(b64)}`;
+      } catch (e) {
+        fetchUrl = `/api/proxy?url=${encodeURIComponent(url)}`;
+      }
+    }
+    console.log(`[SERVICE] Fetching EPG: ${useProxy ? 'via proxy' : 'direct'}`);
+    
+    const response = await fetch(fetchUrl);
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`Failed to fetch EPG via proxy: ${response.status} ${errorText.substring(0, 50)}`);
+      throw new Error(`Server responded with ${response.status}: ${errorText.substring(0, 100)}`);
     }
     const text = await response.text();
+    
+    // Check if it's an HTML error page masquerading as EPG
+    if (text.includes('<html') || text.includes('<!DOCTYPE html')) {
+      console.warn("[EPG] Received HTML instead of XML. Likely an error page.");
+      return [];
+    }
+    
     return parseXMLTV(text);
   } catch (error) {
     console.error('Error fetching EPG:', error);
+    if (error instanceof TypeError) {
+      if (!useProxy) {
+        throw new Error('EPG Load failed (Direct). CORS restriction likely. Enable proxy in settings.');
+      }
+      throw new Error(`EPG Network error (Proxy): ${error.message}`);
+    }
     throw error;
   }
 }
