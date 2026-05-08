@@ -3,6 +3,7 @@ import { createServer as createViteServer } from "vite";
 import path from "path";
 import axios from "axios";
 import https from "https";
+import http from "http";
 
 async function startServer() {
   const app = express();
@@ -12,7 +13,10 @@ async function startServer() {
   const axiosInstance = axios.create({
     httpsAgent: new https.Agent({  
       rejectUnauthorized: false,
-      keepAlive: true
+      keepAlive: false
+    }),
+    httpAgent: new http.Agent({
+      keepAlive: false
     }),
     maxRedirects: 10,
     validateStatus: () => true
@@ -57,6 +61,7 @@ async function startServer() {
       const headersToForward: Record<string, string> = {
         "User-Agent": "VLC/3.0.18 LibVLC/3.0.18",
         "Accept": "*/*",
+        "Connection": "close",
       };
 
       if (req.headers["range"]) headersToForward["Range"] = req.headers["range"] as string;
@@ -68,17 +73,20 @@ async function startServer() {
 
       const controller = new AbortController();
       let isAborted = false;
+      let response: any;
+      
       req.on("close", () => {
+        console.log(`[PROXY][${requestId}] Aborting (client closed)`);
         isAborted = true;
-        setTimeout(() => {
-          if (isAborted) {
-            console.log(`[PROXY][${requestId}] Aborting (client closed)`);
-            controller.abort();
-          }
-        }, 1000);
+        controller.abort();
+        if (response && response.data) {
+          try {
+            response.data.destroy();
+          } catch (e) {}
+        }
       });
 
-      let response = await axiosInstance.get(urlString, {
+      response = await axiosInstance.get(urlString, {
         timeout: 60000,
         headers: headersToForward,
         responseType: "stream",
@@ -162,7 +170,7 @@ async function startServer() {
       res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
       res.setHeader("Access-Control-Allow-Headers", "*");
       res.setHeader("Access-Control-Expose-Headers", "Content-Length, Content-Range, Content-Type, Accept-Ranges");
-      res.setHeader("Connection", "keep-alive");
+      res.setHeader("Connection", "close");
       
       if (response.headers["content-length"]) res.setHeader("Content-Length", String(response.headers["content-length"]));
       if (response.headers["content-range"]) res.setHeader("Content-Range", String(response.headers["content-range"]));
@@ -179,6 +187,7 @@ async function startServer() {
           const chunks = [];
           let totalBytes = 0;
           for await (const chunk of response.data) {
+            if (isAborted) break;
             chunks.push(chunk);
             totalBytes += chunk.length;
             if (totalBytes > 100 * 1024 * 1024) { // 100MB limit for EPG/M3U

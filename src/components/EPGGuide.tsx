@@ -3,9 +3,17 @@ import { IPTVChannel, EPGItem } from '../types';
 import { parseXMLTVDate } from '../services/epgService';
 import { ScrollArea, ScrollBar } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
-import { ChevronLeft, ChevronRight, Clock, Info } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Clock, Info, Maximize2, Minimize2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
 import { format, addHours, startOfHour, isWithinInterval, addDays, startOfDay, differenceInMinutes } from 'date-fns';
+import { formatChannelName } from '../utils/formatters';
 
 interface EPGGuideProps {
   channels: IPTVChannel[];
@@ -22,6 +30,8 @@ export const EPGGuide: React.FC<EPGGuideProps> = ({ channels, epg, onChannelSele
   const [viewDate, setViewDate] = useState(startOfHour(new Date()));
   const scrollRef = useRef<HTMLDivElement>(null);
   const [now, setNow] = useState(new Date());
+  const [isFullScreen, setIsFullScreen] = useState(false);
+  const [selectedProgram, setSelectedProgram] = useState<{ item: EPGItem, channel: IPTVChannel } | null>(null);
 
   // Update current time every minute
   useEffect(() => {
@@ -73,7 +83,7 @@ export const EPGGuide: React.FC<EPGGuideProps> = ({ channels, epg, onChannelSele
   }, [viewDate]);
 
   return (
-    <div className="flex flex-col h-full bg-slate-950 border border-slate-800 rounded-xl overflow-hidden shadow-2xl">
+    <div className={`flex flex-col h-full bg-slate-950 border border-slate-800 rounded-xl overflow-hidden shadow-2xl transition-all duration-300 ${isFullScreen ? 'fixed inset-0 z-[100] m-0 rounded-none' : 'relative'}`}>
       {/* Date/Control Header */}
       <div className="h-12 border-b border-slate-800 flex items-center justify-between px-4 bg-slate-900/50">
         <div className="flex items-center gap-4">
@@ -86,7 +96,7 @@ export const EPGGuide: React.FC<EPGGuideProps> = ({ channels, epg, onChannelSele
               <ChevronLeft size={16} />
             </Button>
             <span className="text-[10px] font-mono font-bold text-slate-200 min-w-[140px] text-center uppercase">
-              {format(viewDate, 'EEEE, MMM do HH:mm')}
+              {format(viewDate, 'EEEE, MMM do h:mm a')}
             </span>
             <Button variant="ghost" size="icon" className="h-7 w-7 text-slate-400" onClick={() => setViewDate(prev => addHours(prev, 6))}>
               <ChevronRight size={16} />
@@ -102,48 +112,34 @@ export const EPGGuide: React.FC<EPGGuideProps> = ({ channels, epg, onChannelSele
           >
             Go to Now
           </Button>
+          <Button 
+            variant="ghost" 
+            size="icon"
+            onClick={() => setIsFullScreen(!isFullScreen)}
+            className="h-7 w-7 text-slate-400"
+            title={isFullScreen ? "Exit Full Screen" : "Full Screen Guide"}
+          >
+            {isFullScreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+          </Button>
         </div>
       </div>
 
-      <div className="flex-1 flex overflow-hidden">
-        {/* Channel Sidebar (Sticky) */}
-        <div className="w-48 shrink-0 flex flex-col border-r border-slate-800 z-10 bg-slate-900 shadow-xl">
-          <div className="h-10 border-b border-slate-800 shrink-0" />
-          <ScrollArea className="flex-1">
-            {channels.map(channel => (
-              <div 
-                key={channel.id} 
-                className={`h-[70px] border-b border-slate-800 px-3 flex items-center gap-3 transition-colors cursor-pointer group ${selectedChannelId === channel.id ? 'bg-emerald-500/10' : 'hover:bg-slate-800/50'}`}
-                onClick={() => onChannelSelect(channel)}
-              >
-                <div className="w-10 h-10 bg-black rounded border border-slate-800 flex items-center justify-center p-1 overflow-hidden shrink-0">
-                  {channel.logo ? (
-                    <img src={channel.logo} alt="" className="max-w-full max-h-full object-contain" referrerPolicy="no-referrer" />
-                  ) : (
-                    <Tv size={16} className="text-slate-700" />
-                  )}
-                </div>
-                <div className="min-w-0 flex-1">
-                  <p className="text-[11px] font-bold text-slate-200 truncate group-hover:text-emerald-400 transition-colors uppercase tracking-tight leading-tight">
-                    {channel.name}
-                  </p>
-                  <p className="text-[9px] text-slate-500 font-mono mt-0.5">CH {channel.tvgId || '?'}</p>
-                </div>
+      <div className="flex-1 overflow-hidden">
+        <div ref={scrollRef} className="h-full overflow-auto bg-[url('https://www.transparenttextures.com/patterns/carbon-fibre.png')] bg-fixed custom-scrollbar">
+          <div className="relative flex flex-col min-w-max">
+            {/* Sticky Header Row */}
+            <div className="flex sticky top-0 z-50 h-10 bg-slate-900 border-b border-slate-800 shadow-md">
+              {/* Top-Left Corner Piece */}
+              <div className="sticky left-0 z-50 w-48 shrink-0 bg-slate-900 border-r border-slate-800 flex items-center px-4">
+                <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Channel</span>
               </div>
-            ))}
-          </ScrollArea>
-        </div>
-
-        {/* Timeline Grid */}
-        <div className="flex-1 flex flex-col overflow-hidden relative">
-          <div ref={scrollRef} className="flex-1 overflow-auto bg-[url('https://www.transparenttextures.com/patterns/carbon-fibre.png')] bg-fixed">
-            {/* Time Scale Header */}
-            <div className="flex sticky top-0 z-20 h-10 bg-slate-900 border-b border-slate-800 shadow-md">
+              
+              {/* Time Slots */}
               {timeSlots.map((time, i) => (
-                <div key={i} className="flex shrink-0" style={{ width: HOUR_WIDTH }}>
+                <div key={i} className="flex shrink-0 relative" style={{ width: HOUR_WIDTH }}>
                   <div className="flex-1 border-r border-slate-800/50 h-full flex flex-col justify-center px-4 relative">
                     <span className="text-[10px] font-mono font-bold text-slate-300">
-                      {format(time, 'HH:mm')}
+                      {format(time, 'h:mm a')}
                     </span>
                     <span className="text-[8px] text-slate-500 font-bold uppercase tracking-widest mt-0.5">
                       {format(time, 'MMM d')}
@@ -155,25 +151,48 @@ export const EPGGuide: React.FC<EPGGuideProps> = ({ channels, epg, onChannelSele
               ))}
             </div>
 
-            {/* Channels & Programs */}
-            <div className="relative" style={{ width: 24 * HOUR_WIDTH }}>
+            {/* Content Rows */}
+            <div className="relative flex flex-col">
               {/* Vertical Time Indicator */}
               <div 
                 className="absolute top-0 bottom-0 w-px bg-emerald-500 z-10 shadow-[0_0_8px_rgba(16,185,129,0.8)]"
-                style={{ left: (differenceInMinutes(now, timelineStart) / 60) * HOUR_WIDTH }}
+                style={{ 
+                  left: 192 + (differenceInMinutes(now, timelineStart) / 60) * HOUR_WIDTH 
+                }}
               >
                 <div className="absolute top-0 -left-[4px] w-2 h-2 bg-emerald-500 rounded-full" />
               </div>
 
-              {channels.map((channel, cIdx) => (
-                <div key={channel.id} className="h-[70px] border-b border-slate-800/50 relative">
-                  {/* Grid Lines */}
-                  {timeSlots.map((_, i) => (
-                    <div key={i} className="absolute top-0 bottom-0 border-r border-slate-800/20" style={{ left: i * HOUR_WIDTH }} />
-                  ))}
+              {channels.map((channel) => (
+                <div key={channel.id} className="flex h-[70px] border-b border-slate-800/50 relative">
+                  {/* Sticky Channel Sidebar Item */}
+                  <div 
+                    className={`sticky left-0 z-30 w-48 shrink-0 bg-slate-900/95 backdrop-blur-sm border-r border-slate-800 px-3 flex items-center gap-3 transition-colors cursor-pointer group shadow-xl ${selectedChannelId === channel.id ? 'bg-emerald-500/10' : 'hover:bg-slate-800/50'}`}
+                    onClick={() => onChannelSelect(channel)}
+                  >
+                    <div className="w-10 h-10 bg-black rounded border border-slate-800 flex items-center justify-center p-1 overflow-hidden shrink-0">
+                      {channel.logo ? (
+                        <img src={channel.logo} alt="" className="max-w-full max-h-full object-contain" referrerPolicy="no-referrer" />
+                      ) : (
+                        <Tv size={16} className="text-slate-700" />
+                      )}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-[13px] font-bold text-slate-200 truncate group-hover:text-emerald-400 transition-colors uppercase tracking-tight leading-tight">
+                        {formatChannelName(channel.name)}
+                      </p>
+                    </div>
+                  </div>
 
-                  {/* Program Blocks */}
-                  {channel.tvgId && epgByChannel.get(channel.tvgId)?.map((item, pIdx) => {
+                  {/* Program Timeline Section for this Channel */}
+                  <div className="relative" style={{ width: 24 * HOUR_WIDTH }}>
+                    {/* Grid Lines */}
+                    {timeSlots.map((_, i) => (
+                      <div key={i} className="absolute top-0 bottom-0 border-r border-slate-800/20" style={{ left: i * HOUR_WIDTH }} />
+                    ))}
+
+                    {/* Program Blocks */}
+                    {channel.tvgId && epgByChannel.get(channel.tvgId)?.map((item, pIdx) => {
                     const startRaw = item.start;
                     const stopRaw = item.stop;
                     
@@ -200,19 +219,24 @@ export const EPGGuide: React.FC<EPGGuideProps> = ({ channels, epg, onChannelSele
                         }`}
                         style={style}
                         title={item.title}
-                        onClick={() => onChannelSelect(channel)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSelectedProgram({ item, channel });
+                        }}
                       >
-                        <div className="flex items-center justify-between gap-2">
-                           <h4 className={`text-[10px] font-bold truncate ${isLive ? 'text-emerald-400' : 'text-slate-300'}`}>
+                        <div className="flex items-center justify-between gap-2 min-w-0">
+                           <h4 className={`text-[10px] font-bold truncate flex-1 ${isLive ? 'text-emerald-400' : 'text-slate-300'}`}>
                             {item.title}
                           </h4>
-                          {isLive && (
+                          {isLive && style.width > 40 && (
                              <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse shadow-[0_0_4px_rgba(16,185,129,0.8)] shrink-0" />
                           )}
                         </div>
-                        <p className="text-[9px] text-slate-500 font-mono mt-0.5 truncate">
-                          {format(start, 'HH:mm')} - {format(end, 'HH:mm')}
-                        </p>
+                        {style.width > 80 && (
+                          <p className="text-[9px] text-slate-500 font-mono mt-0.5 truncate">
+                            {format(start, 'h:mm a')} - {format(end, 'h:mm a')}
+                          </p>
+                        )}
                         
                         {/* Expand on hover detail - simplified for now */}
                         <div className="absolute right-1 top-1 opacity-0 group-hover/prog:opacity-100 transition-opacity">
@@ -222,11 +246,100 @@ export const EPGGuide: React.FC<EPGGuideProps> = ({ channels, epg, onChannelSele
                     );
                   })}
                 </div>
-              ))}
-            </div>
+              </div>
+            ))}
           </div>
         </div>
       </div>
+    </div>
+
+      {/* Program Details Dialog */}
+      <Dialog open={!!selectedProgram} onOpenChange={(open) => !open && setSelectedProgram(null)}>
+        <DialogContent className="max-w-md bg-slate-900 border-slate-800 text-slate-100 p-0 overflow-hidden">
+          {selectedProgram && (
+            <div className="flex flex-col">
+              {/* Channel Header */}
+              <div className="p-4 bg-slate-800/50 flex items-center gap-3 border-b border-slate-800">
+                <div className="w-10 h-10 bg-black rounded border border-slate-700 flex items-center justify-center p-1">
+                  {selectedProgram.channel.logo ? (
+                    <img src={selectedProgram.channel.logo} alt="" className="max-w-full max-h-full object-contain" referrerPolicy="no-referrer" />
+                  ) : (
+                    <Tv size={16} className="text-slate-600" />
+                  )}
+                </div>
+                <div>
+                  <h3 className="text-xs font-bold text-emerald-500 uppercase tracking-widest">
+                    {formatChannelName(selectedProgram.channel.name)}
+                  </h3>
+                  <p className="text-[10px] text-slate-400 font-mono">CH {selectedProgram.channel.tvgId || '?'}</p>
+                </div>
+              </div>
+
+              <div className="p-6">
+                <h2 className="text-xl font-bold text-slate-100 leading-tight mb-2">
+                  {selectedProgram.item.title}
+                </h2>
+                
+                <div className="flex items-center gap-4 mb-6">
+                  <Badge variant="outline" className="bg-emerald-500/10 text-emerald-400 border-emerald-500/20 px-2 py-0 h-5 text-[10px] font-bold uppercase tracking-wider">
+                    {format(parseXMLTVDate(selectedProgram.item.start), 'h:mm a')} - {format(parseXMLTVDate(selectedProgram.item.stop), 'h:mm a')}
+                  </Badge>
+                  <span className="text-xs text-slate-500 font-mono">
+                    {differenceInMinutes(parseXMLTVDate(selectedProgram.item.stop), parseXMLTVDate(selectedProgram.item.item_parsed_start || selectedProgram.item.start))} min
+                  </span>
+                </div>
+
+                <div className="space-y-4">
+                  <div>
+                    <h4 className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 mb-2">Description</h4>
+                    <p className="text-sm text-slate-300 leading-relaxed">
+                      {selectedProgram.item.desc || "No description available for this program."}
+                    </p>
+                  </div>
+
+                  {selectedProgram.item.category && (
+                    <div>
+                      <h4 className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 mb-2">Category</h4>
+                      <div className="flex flex-wrap gap-2">
+                        {Array.isArray(selectedProgram.item.category) ? (
+                          selectedProgram.item.category.map((cat: string, i: number) => (
+                            <Badge key={i} variant="secondary" className="bg-slate-800 text-slate-400 border-none text-[10px]">
+                              {cat}
+                            </Badge>
+                          ))
+                        ) : (
+                          <Badge variant="secondary" className="bg-slate-800 text-slate-400 border-none text-[10px]">
+                            {selectedProgram.item.category}
+                          </Badge>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="p-4 bg-slate-900 border-t border-slate-800 flex justify-end gap-3 mt-4">
+                <Button 
+                  variant="outline" 
+                  className="bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700 h-9 px-4 text-xs font-bold uppercase tracking-widest"
+                  onClick={() => setSelectedProgram(null)}
+                >
+                  Close
+                </Button>
+                <Button 
+                  className="bg-emerald-600 hover:bg-emerald-500 text-white border-none h-9 px-6 text-xs font-bold uppercase tracking-widest shadow-[0_0_15px_rgba(16,185,129,0.3)]"
+                  onClick={() => {
+                    onChannelSelect(selectedProgram.channel);
+                    setSelectedProgram(null);
+                  }}
+                >
+                  Watch Now
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

@@ -1,7 +1,8 @@
-import React from 'react';
+import React, { useRef, useCallback } from 'react';
 import { IPTVChannel } from '../types';
-import { Badge } from '@/components/ui/badge';
 import { Heart } from 'lucide-react';
+import { motion } from 'motion/react';
+import { formatChannelName } from '../utils/formatters';
 
 interface ChannelCardProps {
   channel: IPTVChannel;
@@ -9,7 +10,7 @@ interface ChannelCardProps {
   isFavorite: boolean;
   isFocused?: boolean;
   onClick: () => void;
-  onToggleFavorite: (e: React.MouseEvent) => void;
+  onToggleFavorite: (e: React.MouseEvent | React.TouchEvent) => void;
   currentProgram?: string;
 }
 
@@ -22,11 +23,26 @@ export const ChannelCard: React.FC<ChannelCardProps> = ({
   onToggleFavorite,
   currentProgram 
 }) => {
+  const longPressTimer = useRef<NodeJS.Timeout | null>(null);
+
+  const startLongPress = useCallback((e: React.MouseEvent | React.TouchEvent) => {
+    longPressTimer.current = setTimeout(() => {
+      onToggleFavorite(e);
+      // Simple feedback could be added here
+    }, 600);
+  }, [onToggleFavorite]);
+
+  const endLongPress = useCallback(() => {
+    if (longPressTimer.current) {
+      clearTimeout(longPressTimer.current);
+    }
+  }, []);
+
   return (
     <div
       data-nav-id={channel.id}
       onClick={onClick}
-      className={`flex items-center gap-4 p-3 rounded-xl cursor-pointer transition-all duration-200 group relative ${
+      className={`flex items-center gap-3 p-3 rounded-xl cursor-pointer transition-all duration-200 group relative ${
         isSelected 
           ? 'bg-emerald-500/10 border border-emerald-500/30 text-white' 
           : isFocused
@@ -53,8 +69,17 @@ export const ChannelCard: React.FC<ChannelCardProps> = ({
 
       <div className="flex-1 min-w-0">
         <div className="flex justify-between items-start gap-2">
-          <div className="flex flex-col min-w-0">
-            <h4 className="font-semibold text-sm truncate">{channel.name}</h4>
+          <div 
+            className="flex flex-col min-w-0"
+            onMouseDown={startLongPress}
+            onMouseUp={endLongPress}
+            onMouseLeave={endLongPress}
+            onTouchStart={startLongPress}
+            onTouchEnd={endLongPress}
+          >
+            <h4 className="font-semibold text-sm truncate">
+              {formatChannelName(channel.name)}
+            </h4>
             {channel.group && (
               <span className="text-[9px] text-slate-600 uppercase font-bold tracking-tighter truncate">
                 {channel.group}
@@ -62,7 +87,10 @@ export const ChannelCard: React.FC<ChannelCardProps> = ({
             )}
           </div>
           <button 
-            onClick={onToggleFavorite}
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleFavorite(e);
+            }}
             className={`p-1.5 rounded-full transition-colors ${isFavorite ? 'text-rose-500' : 'text-slate-600 hover:text-rose-400 opacity-0 group-hover:opacity-100'}`}
           >
             <Heart size={16} fill={isFavorite ? "currentColor" : "none"} />

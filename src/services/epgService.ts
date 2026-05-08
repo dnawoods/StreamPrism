@@ -1,29 +1,61 @@
 import { EPGItem } from '../types';
 
 export function parseXMLTV(content: string): EPGItem[] {
-  const sanitizedContent = content.trim();
+  let sanitizedContent = content.trim();
   if (!sanitizedContent) {
     console.warn("[EPG] Empty EPG content received");
     return [];
   }
   
-  const parser = new DOMParser();
-  // Basic check if it even looks like XML
-  if (!sanitizedContent.includes('<') || !sanitizedContent.includes('>')) {
-    console.warn("[EPG] Content does not look like XML");
-    return [];
-  }
+  // Remove ALL XML declarations from the content. 
+  // They are only valid at the very start of an XML document.
+  // Since we are wrapping the content, any existing declaration would be invalid.
+  sanitizedContent = sanitizedContent.replace(/<\?xml.*?\?>/g, '');
+
+  // Fix unescaped ampersands which are extremely common in IPTV EPGs
+  sanitizedContent = sanitizedContent.replace(/&(?!(amp|lt|gt|quot|apos);|#)/g, '&amp;');
+
+  // Truncation protection: Many IPTV providers return truncated XML.
+  // We find the last complete fundamental tag to avoid "mismatch" errors at the end.
+  const lastProgramEnd = sanitizedContent.lastIndexOf('</programme>');
+  const lastChannelEnd = sanitizedContent.lastIndexOf('</channel>');
+  const lastTvEnd = sanitizedContent.lastIndexOf('</tv>');
   
-  const xmlDoc = parser.parseFromString(sanitizedContent, 'text/xml');
+  const lastValidIndex = Math.max(
+    lastProgramEnd !== -1 ? lastProgramEnd + 12 : 0, 
+    lastChannelEnd !== -1 ? lastChannelEnd + 10 : 0,
+    lastTvEnd !== -1 ? lastTvEnd + 5 : 0
+  );
+  
+  if (lastValidIndex > 0) {
+    sanitizedContent = sanitizedContent.substring(0, lastValidIndex);
+  }
+
+  // Wrap the content to ensure it has a single root element and avoid "extra content at end" errors
+  const wrapContent = `<?xml version="1.0" encoding="UTF-8"?><epg_wrapper>${sanitizedContent}</epg_wrapper>`;
+  
+  const parser = new DOMParser();
+  const xmlDoc = parser.parseFromString(wrapContent, 'text/xml');
   
   // Check for parsing errors
   const parserError = xmlDoc.getElementsByTagName('parsererror');
   if (parserError.length > 0) {
     console.error("[EPG] XML Parsing Error:", parserError[0].textContent);
-    // Try to recover or just return empty
+    
+    // If wrapping failed, try parsing the original as a fallback
+    // (sometimes the wrapper itself might cause issues if the content is very weird)
+    const fallbackDoc = parser.parseFromString(sanitizedContent, 'text/xml');
+    const fallbackError = fallbackDoc.getElementsByTagName('parsererror');
+    if (fallbackError.length === 0) {
+      return processDoc(fallbackDoc);
+    }
     return [];
   }
 
+  return processDoc(xmlDoc);
+}
+
+function processDoc(xmlDoc: Document): EPGItem[] {
   const programmes = xmlDoc.getElementsByTagName('programme');
   const items: EPGItem[] = [];
 

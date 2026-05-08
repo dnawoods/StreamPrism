@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
@@ -147,22 +148,60 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ url, title, channelId,
     let hls: Hls | null = null;
     let tsPlayer: any = null;
     let statsInterval: ReturnType<typeof setInterval> | null = null;
+    let isCanceled = false;
+    let playbackTimeout: ReturnType<typeof setTimeout> | null = null;
 
-    const startPlayback = (engineToTry: PlayerEngine, retryCount = 0, engineHistory: PlayerEngine[] = []) => {
-      if (statsInterval) clearInterval(statsInterval);
-      
-      const newHistory = [...engineHistory, engineToTry];
+    const terminateCurrentStream = () => {
+      if (playbackTimeout) {
+        clearTimeout(playbackTimeout);
+        playbackTimeout = null;
+      }
+      if (statsInterval) {
+        clearInterval(statsInterval);
+        statsInterval = null;
+      }
       
       if (hlsRef.current) {
-        hlsRef.current.destroy();
+        try {
+          hlsRef.current.detachMedia();
+          hlsRef.current.destroy();
+        } catch (e) {
+          console.warn('[PLAYER] HLS cleanup error:', e);
+        }
         hlsRef.current = null;
       }
+      
       if (mpegtsRef.current) {
-        mpegtsRef.current.destroy();
+        try {
+          mpegtsRef.current.pause();
+          mpegtsRef.current.unload();
+          mpegtsRef.current.detachMediaElement();
+          mpegtsRef.current.destroy();
+        } catch (e) {
+          console.warn('[PLAYER] mpegts cleanup error:', e);
+        }
         mpegtsRef.current = null;
       }
 
-      setEngine(engineToTry);
+      if (video) {
+        try {
+          video.pause();
+          video.src = "";
+          video.removeAttribute('src');
+          video.load();
+        } catch (e) {
+          console.warn('[PLAYER] Video element reset error:', e);
+        }
+      }
+      
+      setEngine('none');
+      setHasError(null);
+    };
+
+    const startPlayback = (engineToTry: PlayerEngine, retryCount = 0, engineHistory: PlayerEngine[] = []) => {
+      terminateCurrentStream();
+      
+      const newHistory = [...engineHistory, engineToTry];
 
       if (engineToTry === 'hls' && Hls.isSupported()) {
         const hlsInstance = new Hls({
@@ -218,7 +257,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ url, title, channelId,
           if (e.name !== 'AbortError') {
             if (retryCount < 2) {
               console.log(`[PLAYER] Play failed, retrying mpegts (${retryCount + 1})...`);
-              setTimeout(() => startPlayback('mpegts', retryCount + 1, engineHistory), 1000);
+              playbackTimeout = setTimeout(() => startPlayback('mpegts', retryCount + 1, engineHistory), 1000);
             } else {
               setIsPlaying(false);
             }
@@ -228,13 +267,15 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ url, title, channelId,
         tsPlayer.on(mpegts.Events.ERROR, (type: any, detail: any, info: any) => {
           console.error(`[MPEGTS] Error (${type}): ${detail}`, info);
           
+          if (isCanceled) return;
+
           const isNetworkError = type === 'NetworkError' || detail === 'Exception' || detail === 'NetworkError' || detail === 'NetworkException';
           
           if (isNetworkError) {
             if (retryCount < 2) {
               const delay = retryCount === 0 ? 1000 : 3000;
               console.log(`[PLAYER] Network error in mpegts, retrying (${retryCount + 1}) in ${delay}ms...`);
-              setTimeout(() => startPlayback('mpegts', retryCount + 1, engineHistory), delay);
+              playbackTimeout = setTimeout(() => startPlayback('mpegts', retryCount + 1, engineHistory), delay);
               return;
             } else if (retryCount === 2) {
               if (newHistory.includes('hls')) {
@@ -255,10 +296,11 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ url, title, channelId,
         setEngine('native');
         video.src = effectiveUrl;
         video.play().catch(e => {
+          if (isCanceled) return;
           if (e.name !== 'AbortError') {
             if (retryCount < 1) {
               console.log("[PLAYER] Native play failed, retrying once...");
-              setTimeout(() => startPlayback('native', 1), 1000);
+              playbackTimeout = setTimeout(() => startPlayback('native', 1), 1000);
             } else {
               setHasError({
                 message: 'Signal Lost / Source Offline',
@@ -271,15 +313,27 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ url, title, channelId,
       }
     };
 
-    const lowerUrl = url.toLowerCase();
-    const isHls = lowerUrl.includes('.m3u8') || lowerUrl.includes('type=m3u8');
+    // Initial termination
+    terminateCurrentStream();
     
     // Initial engine choice
-    if (isHls) {
-      startPlayback('hls');
-    } else {
-      startPlayback('mpegts');
-    }
+    const startAfterDelay = () => {
+      if (isCanceled) return;
+      
+      const lowerUrl = url.toLowerCase();
+      const isHls = lowerUrl.includes('.m3u8') || lowerUrl.includes('type=m3u8');
+      
+      if (isHls) {
+        startPlayback('hls');
+      } else {
+        startPlayback('mpegts');
+      }
+    };
+
+    // We wait 2000ms to ensure the provider has registered the previous connection as closed
+    // This is critical for users with a 1-connection limit
+    console.log(`[PLAYER] Waiting 2s before starting new stream to ensure previous connection is closed...`);
+    playbackTimeout = setTimeout(startAfterDelay, 2000);
 
     const updateStats = () => {
       if (!videoRef.current) return;
@@ -307,32 +361,9 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ url, title, channelId,
     statsInterval = setInterval(updateStats, 2000);
 
     return () => {
-      if (statsInterval) clearInterval(statsInterval);
-      if (hls) {
-        try {
-          hls.detachMedia();
-          hls.destroy();
-        } catch (e) {
-          console.warn('[PLAYER] HLS cleanup error:', e);
-        }
-        if (hlsRef.current === hls) hlsRef.current = null;
-      }
-      if (tsPlayer) {
-        try {
-          tsPlayer.pause();
-          tsPlayer.unload();
-          tsPlayer.detachMediaElement();
-          tsPlayer.destroy();
-        } catch (e) {
-          console.warn('[PLAYER] mpegts cleanup error:', e);
-        }
-        if (mpegtsRef.current === tsPlayer) mpegtsRef.current = null;
-      }
-      if (videoRef.current) {
-        videoRef.current.pause();
-        videoRef.current.removeAttribute('src');
-        videoRef.current.load();
-      }
+      isCanceled = true;
+      if (playbackTimeout) clearTimeout(playbackTimeout);
+      terminateCurrentStream();
     };
   }, [url, title]);
 
@@ -364,13 +395,13 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ url, title, channelId,
     <div 
       ref={containerRef}
       id="player-container"
-      className="relative w-full h-full bg-black flex items-center justify-center overflow-hidden group"
+      className="relative w-full h-full bg-black flex items-center justify-center overflow-hidden group shadow-2xl"
       onMouseMove={handleMouseMove}
       onMouseLeave={() => isPlaying && setShowControls(false)}
     >
       <video
         ref={videoRef}
-        className="w-full h-full cursor-pointer max-h-screen"
+        className="w-full h-full cursor-pointer object-contain"
         onClick={togglePlay}
         onPlay={() => setIsPlaying(true)}
         onPause={() => setIsPlaying(false)}
@@ -531,14 +562,16 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ url, title, channelId,
             <DropdownMenuContent className="bg-slate-900 border-slate-800 text-slate-200">
               <DropdownMenuLabel>Quality Settings</DropdownMenuLabel>
               <DropdownMenuSeparator className="bg-slate-800" />
-              <DropdownMenuRadioGroup value={currentLevel.toString()} onValueChange={changeLevel}>
-                <DropdownMenuRadioItem value="-1">Auto (Recommend)</DropdownMenuRadioItem>
-                {levels.map(level => (
-                  <DropdownMenuRadioItem key={level.id} value={level.id.toString()}>
-                    {level.height}p ({Math.round(level.bitrate/1000)}k)
-                  </DropdownMenuRadioItem>
-                ))}
-              </DropdownMenuRadioGroup>
+              <DropdownMenuGroup>
+                <DropdownMenuRadioGroup value={currentLevel.toString()} onValueChange={changeLevel}>
+                  <DropdownMenuRadioItem value="-1">Auto (Recommend)</DropdownMenuRadioItem>
+                  {levels.map(level => (
+                    <DropdownMenuRadioItem key={level.id} value={level.id.toString()}>
+                      {level.height}p ({Math.round(level.bitrate/1000)}k)
+                    </DropdownMenuRadioItem>
+                  ))}
+                </DropdownMenuRadioGroup>
+              </DropdownMenuGroup>
             </DropdownMenuContent>
           </DropdownMenu>
 

@@ -4,7 +4,7 @@
  */
 
 import { useEffect, useState, useMemo, useCallback } from 'react';
-import { Search, Tv, List, Info, AlertCircle, Play, Heart, Lock, ShieldAlert, History, PowerOff } from 'lucide-react';
+import { Search, Tv, List, Info, AlertCircle, Play, Heart, Lock, ShieldAlert, History, PowerOff, Filter, X } from 'lucide-react';
 import { fetchPlaylist } from './services/iptvService';
 import { fetchEPG, parseXMLTVDate } from './services/epgService';
 import { IPTVChannel, IPTVPlaylist, AppSettings, EPGItem } from './types';
@@ -21,6 +21,10 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { useKeyboardNavigation } from './hooks/useKeyboardNavigation';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Label } from '@/components/ui/label';
+import { formatChannelName } from './utils/formatters';
 
 const DEFAULT_SETTINGS: AppSettings = {
   playlistUrl: 'https://iptv-org.github.io/iptv/countries/us.m3u',
@@ -63,7 +67,8 @@ export default function App() {
   const [selectedChannel, setSelectedChannel] = useState<IPTVChannel | null>(null);
 
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedGroup, setSelectedGroup] = useState<string>('All');
+  const [selectedFilters, setSelectedFilters] = useState<string[]>([]);
+  const [showFavoritesOnly, setShowFavoritesOnly] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
@@ -134,15 +139,29 @@ export default function App() {
 
   const filteredChannels = useMemo(() => {
     if (!playlist) return [];
-    return playlist.channels.filter(ch => {
-      const matchesSearch = ch.name.toLowerCase().includes(searchQuery.toLowerCase());
-      const isFavorite = settings.favorites.includes(ch.id);
-      
-      if (selectedGroup === 'Favorites') return matchesSearch && isFavorite;
-      const matchesGroup = selectedGroup === 'All' || ch.group === selectedGroup;
-      return matchesSearch && matchesGroup;
-    });
-  }, [playlist, searchQuery, selectedGroup, settings.favorites]);
+    return playlist.channels
+      .filter(ch => {
+        const matchesSearch = ch.name.toLowerCase().includes(searchQuery.toLowerCase());
+        const isFavorite = settings.favorites.includes(ch.id);
+        
+        if (showFavoritesOnly && !isFavorite) return false;
+        
+        // If we have multi-filters, they take precedence or complement
+        const matchesMultiFilters = selectedFilters.length === 0 || selectedFilters.includes(ch.group);
+        
+        return matchesSearch && matchesMultiFilters;
+      })
+      .sort((a, b) => {
+        const aFav = settings.favorites.includes(a.id);
+        const bFav = settings.favorites.includes(b.id);
+        if (aFav && !bFav) return -1;
+        if (!aFav && bFav) return 1;
+        
+        const nameA = formatChannelName(a.name);
+        const nameB = formatChannelName(b.name);
+        return nameA.localeCompare(nameB);
+      });
+  }, [playlist, searchQuery, showFavoritesOnly, selectedFilters, settings.favorites]);
 
   const getCurrentProgram = (channel: IPTVChannel) => {
     if (!epg.length || !channel.tvgId) return null;
@@ -168,24 +187,33 @@ export default function App() {
     });
   }, []);
 
-  const handleGroupSelect = (group: string) => {
+  const toggleFilter = (group: string) => {
     const isLocked = settings.parentalControl.enabled && 
                      settings.parentalControl.lockedGroups.some(lg => group.toLowerCase().includes(lg.toLowerCase()));
     
-    if (isLocked) {
+    const isSelected = selectedFilters.includes(group);
+
+    if (!isSelected && isLocked) {
       setPendingGroup(group);
       setIsPinPromptOpen(true);
       setPinInput('');
       setPinError(false);
     } else {
-      setSelectedGroup(group);
+      setSelectedFilters(prev => 
+        isSelected 
+          ? prev.filter(g => g !== group) 
+          : [...prev, group]
+      );
     }
   };
 
   const verifyPin = () => {
     if (pinInput === settings.parentalControl.pin) {
-      if (pendingGroup) setSelectedGroup(pendingGroup);
+      if (pendingGroup) {
+        setSelectedFilters(prev => [...prev, pendingGroup]);
+      }
       setIsPinPromptOpen(false);
+      setPendingGroup(null);
       setPinInput('');
       setPinError(false);
     } else {
@@ -214,26 +242,16 @@ export default function App() {
               <Button 
                 variant="outline" 
                 size="sm" 
-                onClick={() => setRefreshTrigger(prev => prev + 1)} 
+                onClick={() => {
+                  console.log("[SYSTEM] Refreshing data and terminating connections...");
+                  setSelectedChannel(null);
+                  setRefreshTrigger(prev => prev + 1);
+                }} 
                 className="h-9 px-4 border-slate-700 bg-slate-800 text-slate-200 hover:bg-slate-700 text-xs font-semibold"
                 disabled={isLoading}
               >
                 {isLoading ? 'Loading...' : 'Refresh Data'}
               </Button>
-              <Tooltip>
-                <TooltipTrigger 
-                  className="group/button inline-flex shrink-0 items-center justify-center rounded-lg border border-transparent bg-clip-padding transition-all outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 h-9 w-9 text-slate-400 hover:text-rose-500 hover:bg-rose-500/10 transition-colors"
-                  onClick={() => {
-                    console.log("[SYSTEM] Terminating all stream connections...");
-                    setSelectedChannel(null);
-                  }}
-                >
-                  <PowerOff size={18} />
-                </TooltipTrigger>
-                <TooltipContent side="bottom" className="bg-slate-900 border-slate-800 text-[10px] uppercase tracking-widest font-bold text-rose-500">
-                  Terminate All Connections
-                </TooltipContent>
-              </Tooltip>
               <SettingsDialog settings={settings} onSave={(s) => {
                 setSettings({ ...settings, ...s });
                 setRefreshTrigger(prev => prev + 1);
@@ -245,60 +263,8 @@ export default function App() {
         {/* Main Bento Content */}
         <main className="flex-1 p-4 grid grid-cols-12 grid-rows-6 gap-4 overflow-hidden">
           
-          {/* Sidebar: Categories */}
-          <aside className="col-span-2 row-span-6 bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden flex flex-col shadow-xl">
-            <div className="p-4 border-b border-slate-800 bg-slate-800/30">
-              <h2 className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Categories</h2>
-            </div>
-            <ScrollArea className="flex-1 p-2">
-              <div className="space-y-1">
-                <div 
-                  className={`flex items-center justify-between p-3 rounded-lg cursor-pointer transition-colors ${selectedGroup === 'All' ? 'bg-emerald-500/10 border border-emerald-500/20 text-emerald-400' : 'hover:bg-slate-800 text-slate-400'}`}
-                  onClick={() => setSelectedGroup('All')}
-                >
-                  <div className="flex items-center gap-2">
-                    <Tv size={14} />
-                    <span className="text-xs font-medium">All Channels</span>
-                  </div>
-                  <span className="text-[10px] opacity-60">{playlist?.channels.length || 0}</span>
-                </div>
-                
-                <div 
-                  className={`flex items-center justify-between p-3 rounded-lg cursor-pointer transition-colors ${selectedGroup === 'Favorites' ? 'bg-rose-500/10 border border-rose-500/20 text-rose-400' : 'hover:bg-slate-800 text-slate-400'}`}
-                  onClick={() => setSelectedGroup('Favorites')}
-                >
-                  <div className="flex items-center gap-2">
-                    <Heart size={14} />
-                    <span className="text-xs font-medium">Favorites</span>
-                  </div>
-                  <span className="text-[10px] opacity-60">{settings.favorites.length}</span>
-                </div>
-
-                {playlist?.groups.map(group => {
-                  const isLocked = settings.parentalControl.enabled && 
-                                   settings.parentalControl.lockedGroups.some(lg => group.toLowerCase().includes(lg.toLowerCase()));
-                  return (
-                    <div 
-                      key={group}
-                      className={`flex items-center justify-between p-3 rounded-lg cursor-pointer transition-colors ${selectedGroup === group ? 'bg-emerald-500/10 border border-emerald-500/20 text-emerald-400' : 'hover:bg-slate-800 text-slate-400'}`}
-                      onClick={() => handleGroupSelect(group)}
-                    >
-                      <div className="flex items-center gap-2 min-w-0">
-                        {isLocked ? <Lock size={12} className="text-amber-500 flex-shrink-0" /> : <List size={12} className="flex-shrink-0" />}
-                        <span className="text-xs font-medium truncate pr-2">{group}</span>
-                      </div>
-                      <span className="text-[10px] opacity-60">
-                        {playlist?.channels.filter(c => c.group === group).length}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-            </ScrollArea>
-          </aside>
-
           {/* Main Player Window */}
-          <section className="col-span-7 row-span-3 bg-black border border-slate-800 rounded-2xl overflow-hidden relative shadow-2xl flex flex-col">
+          <section className="col-span-9 row-span-3 bg-black border border-slate-800 rounded-2xl overflow-hidden relative shadow-2xl flex flex-col">
             {error && (
               <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50 animate-in fade-in slide-in-from-top-2">
                 <Badge variant="destructive" className="px-4 py-2 flex items-center gap-2">
@@ -309,17 +275,28 @@ export default function App() {
             )}
             {selectedChannel ? (
               <>
-                <div className="flex-1 bg-black flex items-center justify-center relative group">
-                  <VideoPlayer 
-                    url={selectedChannel.url} 
-                    title={selectedChannel.name} 
-                    channelId={selectedChannel.id}
-                    proxyStreams={settings.proxyStreams !== false}
-                  />
+                <div className="flex-1 bg-black relative min-h-0 overflow-hidden">
+                  <div className="absolute inset-0 flex items-center justify-center p-4">
+                    <div className="w-full h-full flex items-center justify-center">
+                      <div className="w-full h-full relative shadow-2xl overflow-hidden rounded-lg bg-slate-950">
+                        <div className="absolute inset-0 flex items-center justify-center">
+                          <div className="w-full h-full aspect-video max-w-full max-h-full relative">
+                            <VideoPlayer 
+                              key={selectedChannel.id}
+                              url={selectedChannel.url} 
+                              title={selectedChannel.name} 
+                              channelId={selectedChannel.id}
+                              proxyStreams={settings.proxyStreams !== false}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
                 </div>
                 <div className="h-20 bg-slate-900/90 border-t border-slate-800 p-4 flex items-center justify-between">
                   <div className="min-w-0 flex-1">
-                    <h3 className="text-lg font-bold text-white truncate">{selectedChannel.name}</h3>
+                    <h3 className="text-lg font-bold text-white truncate">{formatChannelName(selectedChannel.name)}</h3>
                     <p className="text-[10px] text-emerald-500 font-medium uppercase tracking-wider flex items-center gap-1.5">
                       <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
                       {getCurrentProgram(selectedChannel)?.title || 'Live Stream'}
@@ -358,17 +335,139 @@ export default function App() {
 
           {/* Channel List (Tall Right) */}
           <aside className="col-span-3 row-span-6 bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden flex flex-col shadow-xl">
-            <div className="p-4 border-b border-slate-800 bg-slate-950/50">
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={14} />
-                <input 
-                  type="text" 
-                  placeholder="Search channels..." 
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-9 pr-4 py-2.5 text-xs text-slate-200 focus:outline-none focus:border-emerald-500 transition-colors"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                />
+            <div className="p-4 border-b border-slate-800 bg-slate-950/50 flex flex-col gap-3">
+              <div className="flex gap-2">
+                <div className="relative flex-1">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={14} />
+                  <input 
+                    type="text" 
+                    placeholder="Search channels..." 
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-9 pr-4 py-2.5 text-xs text-slate-200 focus:outline-none focus:border-emerald-500 transition-colors"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                  />
+                </div>
+                
+                <Popover>
+                  <PopoverTrigger 
+                    render={(props) => (
+                      <Button 
+                        {...props}
+                        variant="outline" 
+                        size="icon" 
+                        className={`shrink-0 rounded-xl border-slate-800 bg-slate-950 hover:bg-slate-800 h-10 w-10 transition-all ${selectedFilters.length > 0 || showFavoritesOnly ? 'text-emerald-500 border-emerald-500/50 bg-emerald-500/5' : 'text-slate-400'}`}
+                      >
+                        <div className="relative">
+                          <Filter size={16} />
+                          {(selectedFilters.length > 0 || showFavoritesOnly) && (
+                            <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-emerald-500 border-2 border-slate-950 rounded-full" />
+                          )}
+                        </div>
+                      </Button>
+                    )}
+                  />
+                  <PopoverContent className="w-64 bg-slate-900 border-slate-800 p-0 shadow-2xl z-[100]" align="end">
+                    <div className="p-4 border-b border-slate-800 flex items-center justify-between">
+                      <h3 className="text-xs font-bold uppercase tracking-widest text-slate-100">Filter Channels</h3>
+                      {(selectedFilters.length > 0 || showFavoritesOnly) && (
+                        <button 
+                          onClick={() => {
+                            setSelectedFilters([]);
+                            setShowFavoritesOnly(false);
+                          }}
+                          className="text-[10px] text-emerald-500 hover:text-emerald-400 font-bold uppercase"
+                        >
+                          Clear
+                        </button>
+                      )}
+                    </div>
+                    <ScrollArea className="h-[300px]">
+                      <div className="p-2 space-y-1">
+                        {/* Favorites Filter */}
+                        <div 
+                          className="group flex items-center space-x-3 p-2 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
+                          onClick={() => setShowFavoritesOnly(!showFavoritesOnly)}
+                        >
+                          <div className="pointer-events-none">
+                            <Checkbox 
+                              checked={showFavoritesOnly}
+                              className="border-slate-700 data-checked:bg-rose-500 data-checked:border-none"
+                            />
+                          </div>
+                          <Label className="flex-1 text-[11px] font-medium text-slate-300 cursor-pointer pointer-events-none flex items-center gap-2">
+                            <Heart size={12} className={showFavoritesOnly ? "text-rose-500" : "text-slate-500"} fill={showFavoritesOnly ? "currentColor" : "none"} />
+                            Favorites Only
+                          </Label>
+                          <span className="text-[9px] text-slate-600 font-mono group-hover:text-slate-400 transition-colors">
+                            {settings.favorites.length}
+                          </span>
+                        </div>
+
+                        <div className="h-px bg-slate-800 my-2 mx-1" />
+
+                        {playlist?.groups.map(group => {
+                          const isSelected = selectedFilters.includes(group);
+                          const count = playlist?.channels.filter(c => c.group === group).length;
+                          const isLocked = settings.parentalControl.enabled && 
+                                           settings.parentalControl.lockedGroups.some(lg => group.toLowerCase().includes(lg.toLowerCase()));
+                          
+                          return (
+                            <div 
+                              key={group} 
+                              className="group flex items-center space-x-3 p-2 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
+                              onClick={() => toggleFilter(group)}
+                            >
+                              <div className="pointer-events-none flex items-center gap-2">
+                                <Checkbox 
+                                  id={`filter-${group}`} 
+                                  checked={isSelected}
+                                  className="border-slate-700 data-checked:bg-emerald-500 data-checked:border-none"
+                                />
+                              </div>
+                              <Label 
+                                className="flex-1 text-[11px] font-medium text-slate-300 cursor-pointer pointer-events-none flex items-center gap-2"
+                              >
+                                {isLocked && <Lock size={10} className="text-amber-500" />}
+                                {group}
+                              </Label>
+                              <span className="text-[9px] text-slate-600 font-mono group-hover:text-slate-400 transition-colors">
+                                {count}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </ScrollArea>
+                    <div className="p-3 bg-slate-950/50 border-t border-slate-800">
+                      <p className="text-[9px] text-slate-500 text-center italic">
+                        {selectedFilters.length === 0 && !showFavoritesOnly
+                          ? "Select categories or favorites to filter" 
+                          : `${selectedFilters.length + (showFavoritesOnly ? 1 : 0)} filters active`}
+                      </p>
+                    </div>
+                  </PopoverContent>
+                </Popover>
               </div>
+              
+              {selectedFilters.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 pb-1">
+                  {selectedFilters.map(filter => (
+                    <Badge 
+                      key={filter} 
+                      variant="secondary" 
+                      className="bg-emerald-500/10 text-emerald-500 border-emerald-500/20 text-[9px] font-bold py-0 h-5 pl-1.5 pr-1 flex items-center gap-1"
+                    >
+                      {filter}
+                      <button 
+                        onClick={() => setSelectedFilters(prev => prev.filter(f => f !== filter))}
+                        className="hover:bg-emerald-500/20 rounded-full p-0.5 transition-colors"
+                      >
+                        <X size={10} />
+                      </button>
+                    </Badge>
+                  ))}
+                </div>
+              )}
             </div>
             <ScrollArea className="flex-1 p-2">
               <div className="space-y-1">
@@ -425,7 +524,7 @@ export default function App() {
           </aside>
 
           {/* Bottom: Guide */}
-          <section className="col-span-7 row-span-3 bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden flex flex-col shadow-xl">
+          <section className="col-span-9 row-span-3 bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden flex flex-col shadow-xl">
             <div className="flex-1 overflow-hidden">
               <EPGGuide 
                 channels={filteredChannels.slice(0, 100)} 
